@@ -1,8 +1,8 @@
 (function(){
 const C=window.CONFIG,$=id=>document.getElementById(id);
 const brl=v=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-let qty=1,ship='pac',cepOk=false,method='pix',busy=false,cardValid=false;
-let cfg=null,elements=null,card=null,pollTimer=null,lastRef='';
+let qty=1,ship='pac',cepOk=false,method='pix',busy=false;
+let cfg=null,sdkReady=null,pollTimer=null,lastRef='';
 try{qty=Math.min(10,Math.max(1,parseInt(localStorage.getItem('mg_qty'))||1))}catch(e){}
 $('pnome').textContent=C.produto;
 
@@ -86,26 +86,43 @@ $('cep').addEventListener('input',async e=>{
   cepOk=true;$('opts').hidden=false;$('dados').hidden=false;$('pagto').hidden=false;$('fin').hidden=false;$('erro').textContent='';steps();
 });
 
-/* ---------- configuração + Payment Element (cartão) ---------- */
+/* ---------- configuração + campos do cartão ---------- */
 const cfgReady=fetch('/api/checkout?config=1').then(r=>r.json()).then(j=>{cfg=j;fillParc()}).catch(()=>{cfg=null});
-function ensureCard(){
-  const err=$('cardErr');
-  if(card)return true;
-  if(!cfg||!cfg.publicKey||!window.Pagou){err.textContent='Cartão indisponível no momento. Use o Pix.';return false}
-  try{
-    window.Pagou.setEnvironment(cfg.env==='sandbox'?'sandbox':'production');
-    elements=window.Pagou.elements({publicKey:cfg.publicKey,locale:'pt-BR'});
-    card=elements.create('card',{theme:'default'});
-    card.mount('#card-element');
-    card.on('change',ev=>{cardValid=!!ev.valid;err.textContent=Object.values(ev.errors||{})[0]||''});
-    card.on('error',ev=>{err.textContent=(ev&&ev.message)||'Erro ao carregar o campo do cartão.'});
-    return true;
-  }catch(e){err.textContent='Não foi possível carregar o campo do cartão. Use o Pix.';card=null;return false}
+const maskCard=v=>dg(v).slice(0,19).replace(/(\d{4})(?=\d)/g,'$1 ');
+const maskVal=v=>{v=dg(v).slice(0,4);return v.length>2?v.slice(0,2)+'/'+v.slice(2):v};
+$('cnum').addEventListener('input',e=>{e.target.value=maskCard(e.target.value);$('cardErr').textContent=''});
+$('cval').addEventListener('input',e=>{e.target.value=maskVal(e.target.value);$('cardErr').textContent=''});
+$('ccvv').addEventListener('input',e=>{e.target.value=dg(e.target.value).slice(0,4);$('cardErr').textContent=''});
+$('cnome').addEventListener('input',()=>{$('cardErr').textContent=''});
+
+/* Liga o SDK da HyperCash (chave pública). Só roda uma vez. */
+function ensureSdk(){
+  if(sdkReady)return sdkReady;
+  sdkReady=(async()=>{
+    if(!cfg||!cfg.publicKey||!window.FastSoft)throw new Error('card_unavailable');
+    await window.FastSoft.setPublicKey(cfg.publicKey);
+  })().catch(e=>{sdkReady=null;throw e});
+  return sdkReady;
 }
 document.querySelectorAll('input[name=metodo]').forEach(r=>r.onchange=async()=>{
   method=r.value;$('pnPix').hidden=method!=='pix';$('pnCard').hidden=method==='pix';$('erro').textContent='';btnTxt();
-  if(method==='credit_card'){await cfgReady;fillParc();ensureCard()}
+  if(method==='credit_card'){
+    await cfgReady;fillParc();
+    ensureSdk().catch(()=>{$('cardErr').textContent='Cartão indisponível no momento. Use o Pix.'});
+  }
 });
+
+/* Lê e valida o que o cliente digitou no cartão */
+function readCard(){
+  const number=dg($('cnum').value),holderName=$('cnome').value.trim().toUpperCase().replace(/\s+/g,' ');
+  const val=dg($('cval').value),expMonth=val.slice(0,2),expYear='20'+val.slice(2,4),cvv=dg($('ccvv').value);
+  const now=new Date(),yy=now.getFullYear(),mm=now.getMonth()+1,m=+expMonth,y=+expYear;
+  if(number.length<13||number.length>19){return{err:'Confira o número do cartão.',el:'cnum'}}
+  if(holderName.split(' ').length<2){return{err:'Informe o nome como está impresso no cartão.',el:'cnome'}}
+  if(val.length!==4||m<1||m>12||y<yy||(y===yy&&m<mm)){return{err:'Validade inválida ou cartão vencido.',el:'cval'}}
+  if(cvv.length<3){return{err:'Confira o código de segurança (CVV).',el:'ccvv'}}
+  return{card:{number,holderName,expMonth,expYear,cvv}};
+}
 
 /* ---------- chamadas ao servidor ---------- */
 function payload(extra){
@@ -128,7 +145,7 @@ function friendly(e){
   return 'Não foi possível processar o pagamento agora. Tente novamente em instantes.';
 }
 const getStatus=async id=>{const r=await fetch('/api/checkout?status='+encodeURIComponent(id));const j=await r.json().catch(()=>({}));return j.status||''};
-const PAID=['paid','captured'],DEAD=['expired','canceled','refused','chargedback'];
+const PAID=['paid'],DEAD=['expired','canceled','refused','chargedback','refunded'];
 
 /* ---------- telas ---------- */
 function setBusy(on,txt){busy=on;$('fin').disabled=on;if(on&&txt)$('finTxt').textContent=txt;else btnTxt()}
@@ -171,24 +188,42 @@ $('voltar').onclick=()=>{stopPoll();$('pixBox').hidden=true;$('flow').hidden=fal
 /* ---------- Cartão ---------- */
 async function payCard(){
   await cfgReady;
-  if(!ensureCard())throw new Error('card_unavailable');
-  if(!cardValid){$('cardErr').textContent='Confira os dados do cartão.';throw new Error('card_invalid')}
-  let lastErr=null;
-  const result=await elements.submit({
-    createTransaction:async td=>{
-      try{const j=await post({method:'credit_card',token:td.token,installments:Number($('parcSel').value||1)});lastRef=j.ref;return j.data}
-      catch(e){lastErr=e;throw e}
+  const rc=readCard();
+  if(rc.err){$('cardErr').textContent=rc.err;$(rc.el).focus();throw new Error('card_invalid')}
+  try{await ensureSdk()}catch(e){$('cardErr').textContent='Cartão indisponível no momento. Use o Pix.';throw new Error('card_unavailable')}
+  const F=window.FastSoft,cd=rc.card,inst=Number($('parcSel').value||1);
+
+  /* 3D Secure — só roda se estiver ativo na conta. Se der problema, segue sem ele e o gateway decide. */
+  try{
+    if(await F.isThreeDSEnabled()){
+      await F.initializeThreeDS({amount:Math.round(total()*100),currency:'BRL',installments:inst,
+        card:{number:cd.number,holderName:cd.holderName,expMonth:cd.expMonth,expYear:cd.expYear}});
+      await F.authenticateThreeDS({
+        customer:{name:$('nome').value.trim(),email:$('email').value.trim(),phoneNumber:dg($('tel').value)},
+        address:{street:$('rua').value.trim(),streetNumber:$('num').value.trim(),complement:$('comp').value.trim()||'-',
+          zipCode:dg($('cep').value),neighborhood:$('bairro').value.trim(),city:$('cidade').value.trim(),
+          state:$('uf').value.trim().toUpperCase(),country:'BR'}
+      });
+      await F.finalizeThreeDS();
     }
-  });
-  if(lastErr)throw lastErr;
-  const st=result&&result.status,id=result&&result.transaction&&result.transaction.id;
-  if(['succeeded','paid','captured','completed'].includes(st))return done('Pagamento aprovado!','Recebemos seu pagamento. Seu pedido já está sendo preparado para envio.',lastRef);
-  if(['processing','pending','authorized','processed'].includes(st)){
-    if(id){for(let i=0;i<12;i++){await new Promise(r=>setTimeout(r,5000));const s=await getStatus(id).catch(()=>'');if(PAID.includes(s))return done('Pagamento aprovado!','Recebemos seu pagamento. Seu pedido já está sendo preparado para envio.',lastRef);if(DEAD.includes(s))throw new Error('refused')}}
-    return done('Pagamento em análise','Estamos confirmando seu pagamento com o banco. Guarde o número do pedido e fale com a gente se precisar.',lastRef);
+  }catch(e){console.warn('3ds_skipped',e&&e.message)}
+
+  let token;
+  try{token=await F.encrypt(cd)}
+  catch(e){$('cardErr').textContent='Não foi possível validar o cartão. Confira os dados.';throw new Error('card_invalid')}
+
+  const j=await post({method:'credit_card',token,installments:inst});lastRef=j.ref;
+  let st=j.status;
+  if(PAID.includes(st))return done('Pagamento aprovado!','Recebemos seu pagamento. Seu pedido já está sendo preparado para envio.',lastRef);
+  if(DEAD.includes(st))throw new Error('refused');
+  // processando / em análise: acompanha por até ~1 minuto
+  for(let i=0;i<12;i++){
+    await new Promise(r=>setTimeout(r,5000));
+    st=await getStatus(j.id).catch(()=>'');
+    if(PAID.includes(st))return done('Pagamento aprovado!','Recebemos seu pagamento. Seu pedido já está sendo preparado para envio.',lastRef);
+    if(DEAD.includes(st))throw new Error('refused');
   }
-  if(st==='canceled')throw new Error('canceled');
-  throw new Error(st||'failed');
+  return done('Pagamento em análise','Estamos confirmando seu pagamento com o banco. Guarde o número do pedido e fale com a gente se precisar.',lastRef);
 }
 
 /* ---------- botão principal ---------- */
@@ -203,8 +238,7 @@ $('fin').onclick=async()=>{
   }catch(e){
     const m=e&&e.message;
     if(m==='card_invalid'||m==='card_unavailable'){/* mensagem já exibida no campo do cartão */}
-    else if(m==='canceled')er.textContent='A autenticação do cartão foi cancelada. Tente novamente.';
-    else if(m==='refused'||m==='failed')er.textContent='Pagamento não aprovado. Confira os dados do cartão ou tente outro cartão / Pix.';
+    else if(m==='refused'||m==='failed'||m==='canceled')er.textContent='Pagamento não aprovado. Confira os dados do cartão ou tente outro cartão / Pix.';
     else er.textContent=friendly(e);
   }finally{setBusy(false)}
 };
