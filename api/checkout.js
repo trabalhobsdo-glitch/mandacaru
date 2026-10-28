@@ -46,6 +46,25 @@ module.exports = async (req, res) => {
     if (q.config) {
       return res.status(200).json({ publicKey: pub, maxInstallments: maxInst });
     }
+    /* Diagnóstico: abra /api/checkout?diag=1 no navegador. Nunca mostra a chave nem o saldo. */
+    if (q.diag) {
+      const out = {
+        secretKeyConfigured: !!key,
+        secretKeyLength: key ? key.length : 0,
+        secretKeyHasSpacesOrQuotes: key ? /^\s|\s$|^["']|["']$/.test(key) : false,
+        secretKeyLooksLikePublicKey: key ? /^pk_/i.test(key.trim()) : false,
+        publicKeyConfigured: !!pub,
+        publicKeyStartsWith_pk: /^pk_/i.test(pub)
+      };
+      if (!key) return res.status(200).json(out);
+      try {
+        const r = await fetch(BASE + '/api/user/wallet/balance', { headers: auth });
+        out.walletBalanceStatus = r.status;     // 200 = chave OK | 401 = chave errada | 403 = sem permissão
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) out.walletBalanceMessage = str(j && j.message, 120);
+      } catch (e) { out.walletBalanceStatus = 'sem_conexao'; }
+      return res.status(200).json(out);
+    }
     if (q.status) {
       if (!key) return fail(res, 500, 'not_configured');
       const id = String(q.status);
