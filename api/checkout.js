@@ -1,12 +1,15 @@
-/* Função serverless (Vercel) — checkout transparente com a Pagou.
-   A chave secreta fica SÓ em variável de ambiente, nunca no navegador.
+/* Função serverless (Vercel) — checkout transparente com a HyperCash.
+   As chaves ficam SÓ em variáveis de ambiente (Vercel), nunca no GitHub nem no navegador.
    Rotas (todas em /api/checkout):
-     GET  ?config=1        -> chave pública + ambiente (para montar o campo de cartão)
-     GET  ?status=<id>     -> status do pagamento (usado para acompanhar o Pix)
+     GET  ?config=1        -> chave PÚBLICA + parcelas (para tokenizar o cartão no navegador)
+     GET  ?status=<id>     -> status do pagamento (usado para acompanhar Pix e cartão)
      POST {method:'pix'|'credit_card', ...} -> cria a cobrança */
 const net = require('net');
-const BASES = { production: 'https://api.pagou.ai', sandbox: 'https://api.sandbox.pagou.ai' };
+
+const BASE = 'https://api.hypercashbrasil.com.br';   // a HyperCash só tem ambiente de produção
 const digits = s => String(s == null ? '' : s).replace(/\D/g, '');
+const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max || 255);
+const fail = (res, status, error, extra) => res.status(status).json(Object.assign({ error }, extra || {}));
 
 function cpfOk(s) {
   s = digits(s);
@@ -19,35 +22,45 @@ function cpfOk(s) {
   }
   return true;
 }
-const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max || 255);
-const fail = (res, status, error, extra) => res.status(status).json(Object.assign({ error }, extra || {}));
+
+/* A resposta da HyperCash pode vir "solta" ou dentro de { data: ... }. Aceitamos os dois. */
+const unwrap = j => (j && typeof j === 'object' && j.data && typeof j.data === 'object') ? j.data : (j || {});
+const lower = v => String(v == null ? '' : v).toLowerCase();
 
 module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
 
-  const env = process.env.PAGOU_ENV === 'sandbox' ? 'sandbox' : 'production';
-  const base = BASES[env];
-  const key = process.env.PAGOU_API_KEY;
+  const key = process.env.HYPER_SECRET_KEY;                 // chave SECRETA
+  const pub = process.env.HYPER_PUBLIC_KEY || '';           // chave PÚBLICA
   const maxInst = Math.min(12, Math.max(1, parseInt(process.env.CARD_MAX_INSTALLMENTS || '3', 10) || 1));
-  const auth = { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' };
+  // Autenticação da HyperCash: Basic base64("x:CHAVE_SECRETA")
+  const auth = {
+    Authorization: 'Basic ' + Buffer.from('x:' + (key || '')).toString('base64'),
+    'Content-Type': 'application/json',
+    Accept: 'application/json'
+  };
 
   /* ---------- GET ---------- */
   if (req.method === 'GET') {
     const q = req.query || {};
     if (q.config) {
-      return res.status(200).json({ publicKey: process.env.PAGOU_PUBLIC_KEY || '', env, maxInstallments: maxInst });
+      return res.status(200).json({ publicKey: pub, maxInstallments: maxInst });
     }
     if (q.status) {
       if (!key) return fail(res, 500, 'not_configured');
       const id = String(q.status);
       if (!/^[0-9a-zA-Z-]{8,64}$/.test(id)) return fail(res, 400, 'invalid_id');
       try {
-        const r = await fetch(base + '/v2/transactions/' + encodeURIComponent(id), { headers: auth });
+        const r = await fetch(BASE + '/api/user/transactions/' + encodeURIComponent(id), { headers: auth });
         const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.data) return fail(res, 502, 'gateway_error');
-        return res.status(200).json({ status: j.data.status });
+        const d = unwrap(j);
+        if (!r.ok || !d.status) {
+          console.error('hyper_status_error', r.status, JSON.stringify(j).slice(0, 400));
+          return fail(res, 502, 'gateway_error');
+        }
+        return res.status(200).json({ status: lower(d.status) });
       } catch (e) {
-        console.error('pagou_status_failed', e && e.message);
+        console.error('hyper_status_failed', e && e.message);
         return fail(res, 502, 'gateway_unreachable');
       }
     }
@@ -77,7 +90,7 @@ module.exports = async (req, res) => {
   if (!cpfOk(cpf)) return fail(res, 400, 'invalid_buyer', { field: 'cpf' });
   if (phone.length < 10 || phone.length > 11) return fail(res, 400, 'invalid_buyer', { field: 'tel' });
   const zip = digits(a.cep), street = str(a.street), number = str(a.number, 20), neighborhood = str(a.neighborhood),
-        city = str(a.city), state = str(a.state, 2).toUpperCase(), complement = str(a.complement) || null;
+        city = str(a.city), state = str(a.state, 2).toUpperCase(), complement = str(a.complement);
   if (zip.length !== 8) return fail(res, 400, 'invalid_address', { field: 'cep' });
   if (street.length < 2) return fail(res, 400, 'invalid_address', { field: 'rua' });
   if (!number) return fail(res, 400, 'invalid_address', { field: 'num' });
@@ -88,63 +101,67 @@ module.exports = async (req, res) => {
   const price = parseInt(process.env.PRODUCT_PRICE_CENTS || '27990', 10);       // centavos
   const sedexPrice = parseInt(process.env.SEDEX_PRICE_CENTS || '1290', 10);    // centavos
   const shipFee = ship === 'sedex' ? sedexPrice : 0;
-  const amount = price * qty + shipFee;
-
-  const products = [{
-    name: 'PlayStation 3 Super Slim + 2 Controles + HD com +250 Jogos', price, quantity: qty, tangible: true,
-    sku: process.env.PRODUCT_SKU || 'ps3-super-slim-2-controles-hd-250-jogos'
-  }];
-  if (shipFee) products.push({ name: 'Frete SEDEX', price: shipFee, quantity: 1, tangible: false, sku: 'frete-sedex' });
+  const amount = price * qty + shipFee;                                         // total em centavos
 
   const ref = 'MG' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+
+  const address = { street, streetNumber: number, zipCode: zip, neighborhood, city, state, country: 'br' };
+  if (complement) address.complement = complement;
+
   const payload = {
-    external_ref: ref,
-    amount, currency: 'BRL', method,
-    buyer: {
-      name, email, phone: '+55' + phone,
-      document: { type: 'CPF', number: cpf },
-      address: { street, number, complement, neighborhood, city, state, zipCode: zip, country: 'BR' }
+    amount,
+    paymentMethod: method === 'pix' ? 'PIX' : 'CREDIT_CARD',
+    customer: {
+      name, email, phone,
+      document: { number: cpf, type: 'CPF' }
     },
-    products,
-    informations: [{ key: 'frete', value: ship.toUpperCase() }]
+    shipping: { fee: shipFee, address },
+    items: [{
+      title: 'PlayStation 3 Super Slim + 2 Controles + HD com +250 Jogos',
+      unitPrice: price, quantity: qty, tangible: true,
+      externalRef: process.env.PRODUCT_SKU || 'ps3-super-slim-2-controles-hd-250-jogos'
+    }],
+    traceable: true,
+    metadata: { pedido_id: ref, frete: ship.toUpperCase() }
   };
 
   const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  if (ip && net.isIP(ip)) payload.ip_address = ip;
+  if (ip && net.isIP(ip)) payload.ip = ip;
 
-  if (method === 'credit_card') {
+  if (method === 'pix') {
+    payload.pix = { expiresInDays: 1 };
+  } else {
     const token = String(body.token || '');
-    if (!/^(pgct_|pgpm_)/.test(token)) return fail(res, 400, 'invalid_token');
+    if (token.length < 10 || token.length > 4000) return fail(res, 400, 'invalid_token');
     const n = Number(body.installments || 1);
     if (!Number.isInteger(n) || n < 1 || n > maxInst) return fail(res, 400, 'invalid_installments');
-    payload.token = token;
+    payload.card = { hash: token };      // token gerado no navegador pelo SDK (FastSoft.encrypt)
     payload.installments = n;
-    payload.interest_free_installments = maxInst;
   }
 
-  /* ---------- cria a cobrança na Pagou ---------- */
+  /* ---------- cria a cobrança na HyperCash ---------- */
   try {
-    const r = await fetch(base + '/v2/transactions', { method: 'POST', headers: auth, body: JSON.stringify(payload) });
+    const r = await fetch(BASE + '/api/user/transactions', { method: 'POST', headers: auth, body: JSON.stringify(payload) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      console.error('pagou_error', r.status, JSON.stringify(j).slice(0, 600));
-      if (r.status === 422) {
-        const e = (j.errors && j.errors[0]) || {};
-        return fail(res, 422, 'validation', { field: String(e.field || ''), message: String(e.message || '') });
-      }
-      if (r.status === 409) return fail(res, 409, 'duplicate');
+      // O corpo do erro vai para o log da Vercel (nunca para o cliente) — útil para diagnosticar.
+      console.error('hyper_error', r.status, JSON.stringify(j).slice(0, 800));
+      if (r.status === 400) return fail(res, 422, 'validation', { message: str((j && (Array.isArray(j.message) ? j.message[0] : j.message)) || '', 160) });
+      if (r.status === 401 || r.status === 403) return fail(res, 502, 'gateway_auth');
       return fail(res, 502, 'gateway_error');
     }
-    const d = j.data || {};
+    const d = unwrap(j);
+    if (!d.id) { console.error('hyper_no_id', JSON.stringify(j).slice(0, 400)); return fail(res, 502, 'gateway_error'); }
+
     if (method === 'pix') {
-      const qr = d.pix && d.pix.qr_code;
-      if (!d.id || !qr) { console.error('pagou_no_qr', JSON.stringify(j).slice(0, 400)); return fail(res, 502, 'gateway_error'); }
-      return res.status(200).json({ ref, id: d.id, status: d.status, qr_code: qr, expiration_date: d.pix.expiration_date || null });
+      const p = d.pix || {};
+      const qr = p.qrcode || p.qrCode || p.qr_code || '';
+      if (!qr) { console.error('hyper_no_qr', JSON.stringify(j).slice(0, 400)); return fail(res, 502, 'gateway_error'); }
+      return res.status(200).json({ ref, id: d.id, status: lower(d.status), qr_code: qr, expiration_date: p.expirationDate || null });
     }
-    // cartão: devolve a transação sem remover id/status/next_action (o SDK usa isso para o 3DS)
-    return res.status(200).json({ ref, data: d });
+    return res.status(200).json({ ref, id: d.id, status: lower(d.status), refused_reason: d.refusedReason ? str(d.refusedReason, 120) : null });
   } catch (e) {
-    console.error('pagou_fetch_failed', e && e.message);
+    console.error('hyper_fetch_failed', e && e.message);
     return fail(res, 502, 'gateway_unreachable');
   }
 };
