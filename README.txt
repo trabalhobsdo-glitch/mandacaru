@@ -1,4 +1,4 @@
-MANDACARU GAMES — Página de produto + checkout transparente Pagou (Pix e cartão dentro do site)
+MANDACARU GAMES — Página de produto + checkout transparente HyperCash (Pix e cartão dentro do site)
 
 ESTRUTURA
   index.html        página do produto (estilo marketplace)
@@ -8,22 +8,25 @@ ESTRUTURA
   images/           logo, favicon e imagem reserva
 
 VARIÁVEIS NA VERCEL (Settings > Environment Variables)
-  PAGOU_API_KEY          chave SECRETA da Pagou (painel Pagou > API)
-  PAGOU_PUBLIC_KEY       chave PÚBLICA da Pagou (pk_test_... no sandbox, pk_live_... em produção)
-  PAGOU_ENV              sandbox (testes)  |  production (vendas reais)
+  HYPER_SECRET_KEY       chave SECRETA da HyperCash (painel HyperCash > API / Integrações)
+  HYPER_PUBLIC_KEY       chave PÚBLICA da HyperCash (começa com pk_live_...)
   PRODUCT_PRICE_CENTS    27990   (R$ 279,90 em centavos)
-  SEDEX_PRICE_CENTS      1290   (opcional)
-  CARD_MAX_INSTALLMENTS  3      (opcional, parcelas sem juros no cartão)
+  SEDEX_PRICE_CENTS      1290    (opcional)
+  CARD_MAX_INSTALLMENTS  3       (opcional, máximo de parcelas no cartão)
   Depois de criar/alterar variáveis, faça Redeploy.
 
-TESTE EM SANDBOX
-  Pix: use o CPF 390.271.878-19 — o Pix é confirmado sozinho em ~15 segundos.
-  Cartão aprovado: 4548 8120 4940 0004, validade 12/34, CVV 123.
-  Cartão recusado: 1111 1111 1111 1117.   Cartão com 3DS: 4918 0191 9988 3839.
-  Para vendas reais: PAGOU_ENV=production + chaves de PRODUÇÃO (secreta e pública).
+APAGAR (não são mais usadas)
+  PAGOU_API_KEY, PAGOU_PUBLIC_KEY, PAGOU_ENV
+
+TESTES
+  A HyperCash só tem ambiente de PRODUÇÃO (não existe sandbox). Para testar sem gastar:
+  coloque PRODUCT_PRICE_CENTS=500 (R$ 5,00), faça Redeploy, pague um Pix de verdade e confira
+  no painel da HyperCash. Depois volte o preço certo e faça Redeploy de novo.
+  Se algo falhar, veja Vercel > seu projeto > Logs: a resposta de erro da HyperCash aparece lá
+  (linhas "hyper_error ...").
 
 IMPORTANTE
   - A chave secreta NUNCA vai no GitHub nem no navegador, só na Vercel.
   - O valor cobrado vem do servidor. Se mudar o preço, mude na Vercel E em js/config.js (que só exibe: campo "preco"; "precoAntigo" é o preço riscado, 0 = esconde).
   - O GitHub Pages NÃO serve: ele não roda a pasta api/. Use a Vercel.
-  - Pedidos, endereços e status aparecem no painel da Pagou.
+  - Pedidos, endereços e status aparecem no painel da HyperCash.
