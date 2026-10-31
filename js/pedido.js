@@ -149,9 +149,11 @@ const PAID=['paid'],DEAD=['expired','canceled','refused','chargedback','refunded
 
 /* ---------- telas ---------- */
 function setBusy(on,txt){busy=on;$('fin').disabled=on;if(on&&txt)$('finTxt').textContent=txt;else btnTxt()}
+/* Meta Pixel: Purchase. Pix = marca ao gerar o código; cartão = marca ao aprovar. */
+function trackPurchase(){if(window.fbq)try{fbq('track','Purchase',{content_name:C.produto,content_type:'product',num_items:qty,value:Math.round(total()*100)/100,currency:'BRL'})}catch(e){}}
 function done(title,msg,ref){
   stopPoll();
-  if(title!=='Pagamento em análise'&&window.fbq)try{fbq('track','Purchase',{content_name:C.produto,content_type:'product',num_items:qty,value:Math.round(total()*100)/100,currency:'BRL'})}catch(e){}   // Meta Pixel: só quando o pagamento é confirmado
+  if(title==='Pagamento aprovado!')trackPurchase();
   $('flow').hidden=true;$('pixBox').hidden=true;$('done').hidden=false;
   $('doneT').textContent=title;$('doneP').textContent=msg;$('doneRef').textContent=ref?'Pedido '+ref:'';$('doneRef').hidden=!ref;
   try{localStorage.removeItem('mg_qty')}catch(e){}
@@ -162,6 +164,7 @@ function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null}}
 /* ---------- Pix ---------- */
 async function payPix(){
   const j=await post({method:'pix'});lastRef=j.ref;
+  trackPurchase();
   $('flow').hidden=true;$('pixBox').hidden=false;
   $('pixCode').textContent=j.qr_code;
   const q=$('qr');q.innerHTML='';
